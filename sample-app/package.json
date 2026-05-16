@@ -1,0 +1,7 @@
+{
+  "name": "pr-preview-sample-app",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  }
+}
