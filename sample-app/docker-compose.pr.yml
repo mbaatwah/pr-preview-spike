@@ -9,6 +9,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.app-pr-${PR_NUMBER}.rule=Host(`pr-${PR_NUMBER}.mypreviews.online`)"
+      - "traefik.http.routers.app-pr-${PR_NUMBER}.entrypoints=web"
       - "traefik.http.services.app-pr-${PR_NUMBER}.loadbalancer.server.port=3000"
     networks:
       - traefik

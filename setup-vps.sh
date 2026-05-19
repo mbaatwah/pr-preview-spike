@@ -18,13 +18,13 @@ set -a; source .env; set +a
 
 : "${WEBHOOK_SECRET:?Set WEBHOOK_SECRET in .env}"
 : "${BASE_DOMAIN:?Set BASE_DOMAIN in .env}"
-: "${SMEE_CHANNEL:?Set SMEE_CHANNEL in .env}"
+: "${ACME_EMAIL:?Set ACME_EMAIL in .env}"
 
 SPIKE_DIR="$SCRIPT_DIR/spike-service"
 
 echo "==> PR Preview Spike — VPS Setup"
 echo "    Domain:   ${BASE_DOMAIN}"
-echo "    Smee:     ${SMEE_CHANNEL}"
+echo "    ACME:     ${ACME_EMAIL}"
 echo "    Spike dir: ${SPIKE_DIR}"
 
 # ─── 1. Install Docker + Compose ─────────────────────────────────
@@ -52,8 +52,13 @@ echo "  npm:       $(npm --version 2>/dev/null || echo 'NOT FOUND')"
 echo "==> Step 3: Setting up Traefik"
 docker network inspect traefik &>/dev/null || docker network create traefik
 
-mkdir -p /opt/traefik
-cat > /opt/traefik/docker-compose.yml <<'COMPOSE'
+mkdir -p /opt/traefik/dynamic
+
+# Create acme.json for Let's Encrypt
+touch /opt/traefik/acme.json && chmod 600 /opt/traefik/acme.json
+
+# Write Traefik compose file
+cat > /opt/traefik/docker-compose.yml <<COMPOSE
 services:
   traefik:
     image: traefik:v3.3
@@ -62,11 +67,20 @@ services:
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./acme.json:/acme.json
+      - ./dynamic:/etc/traefik/dynamic:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/acme.json"
     networks:
       - traefik
 
@@ -75,6 +89,29 @@ networks:
     external: true
 COMPOSE
 
+# Write Traefik dynamic config for webhook routing
+cat > /opt/traefik/dynamic/webhooks.yml <<DYNAMIC
+http:
+  routers:
+    webhook:
+      rule: "Host(\`${BASE_DOMAIN}\`)"
+      service: spike-webhook
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: letsencrypt
+      priority: 100
+  services:
+    spike-webhook:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3002"
+DYNAMIC
+
+# Restart Traefik if already running, otherwise start
+if docker ps --format '{{.Names}}' | grep -q 'traefik'; then
+  echo "  Tearing down existing Traefik..."
+  docker compose -f /opt/traefik/docker-compose.yml -p traefik down
+fi
 docker compose -f /opt/traefik/docker-compose.yml -p traefik up -d
 echo "  Traefik is running"
 
@@ -90,12 +127,8 @@ BASE_DOMAIN=${BASE_DOMAIN}
 PORT=3002
 ENVFILE
 
-# ─── 5. Install smee client ──────────────────────────────────────
-echo "==> Step 5: Installing smee-client"
-npm install --save-dev smee-client
-
-# ─── 6. Create systemd services ──────────────────────────────────
-echo "==> Step 6: Creating systemd services"
+# ─── 5. Create systemd service ───────────────────────────────────
+echo "==> Step 5: Creating systemd service"
 
 cat > /etc/systemd/system/pr-preview-spike.service <<UNIT
 [Unit]
@@ -115,45 +148,34 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-cat > /etc/systemd/system/pr-preview-smee.service <<UNIT
-[Unit]
-Description=Smee Webhook Proxy for PR Preview
-After=network.target pr-preview-spike.service
-Wants=network.target pr-preview-spike.service
-
-[Service]
-Type=simple
-WorkingDirectory=${SPIKE_DIR}
-ExecStart=/usr/bin/npx smee -u ${SMEE_CHANNEL} -t http://localhost:3002/webhooks
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
 systemctl daemon-reload
-systemctl enable pr-preview-spike.service pr-preview-smee.service
-systemctl restart pr-preview-spike.service pr-preview-smee.service
+systemctl enable pr-preview-spike.service
+systemctl restart pr-preview-spike.service
 
-# ─── 7. Verify ───────────────────────────────────────────────────
+# Remove old smee service if it exists
+if [ -f /etc/systemd/system/pr-preview-smee.service ]; then
+  systemctl stop pr-preview-smee.service 2>/dev/null || true
+  systemctl disable pr-preview-smee.service 2>/dev/null || true
+  rm -f /etc/systemd/system/pr-preview-smee.service
+  systemctl daemon-reload
+fi
+
+# ─── 6. Verify ───────────────────────────────────────────────────
 echo ""
 echo "==> Waiting 3s for services to start..."
 sleep 3
 
 echo "Systemd status:"
 systemctl status pr-preview-spike.service --no-pager --lines=5 || true
-echo "---"
-systemctl status pr-preview-smee.service --no-pager --lines=5 || true
 
 echo ""
 echo "==================================================================="
 echo "  Setup complete!"
 echo ""
 echo "  Spike logs:  journalctl -u pr-preview-spike -f"
-echo "  Smee logs:   journalctl -u pr-preview-smee -f"
 echo ""
-echo "  Webhook URL (use in GitHub App): ${SMEE_CHANNEL}"
+echo "  Webhook URL (use in GitHub App): https://${BASE_DOMAIN}/webhooks"
+echo "  App preview: http://pr-N.${BASE_DOMAIN}"
 echo ""
 echo "  Next:"
 echo "  1. Create sample app repo (push sample-app/ to GitHub)"

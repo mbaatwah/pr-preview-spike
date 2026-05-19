@@ -36,19 +36,20 @@ cp .env.template .env
 Required fields:
 - `WEBHOOK_SECRET` — generate with: `openssl rand -hex 32`
 - `BASE_DOMAIN` — `mypreviews.online` (or your domain)
-- `SMEE_CHANNEL` — get from https://smee.io (click "Start a new channel", copy the URL)
+- `ACME_EMAIL` — your email for Let's Encrypt certificate issuance
 
 ---
 
 ## Step 3: DNS Setup (on your DNS provider)
 
-**Add a wildcard A record** for your domain:
+Add two records pointing to your VPS IP:
 
 ```
-*.mypreviews.online  →  <VPS_IP>
+mypreviews.online       →  <VPS_IP>      (A - for Let's Encrypt + webhook)
+*.mypreviews.online     →  <VPS_IP>      (A - wildcard, for PR previews)
 ```
 
-Verify: `dig pr-1.mypreviews.online` should resolve to your VPS IP.
+Verify: `dig pr-1.mypreviews.online` and `dig mypreviews.online` should resolve to your VPS IP.
 
 ---
 
@@ -61,10 +62,9 @@ sudo ./setup-vps.sh
 This script installs and configures everything on the VPS:
 1. Docker + Compose v2
 2. Node.js 20
-3. Traefik reverse proxy on ports 80/443
+3. Traefik reverse proxy on ports 80/443 with Let's Encrypt
 4. Spike service npm dependencies
-5. Smee webhook tunnel
-6. systemd services for both spike and smee
+5. systemd service for the spike
 
 Verify it's running:
 
@@ -77,7 +77,6 @@ Check logs:
 
 ```bash
 journalctl -u pr-preview-spike -f
-journalctl -u pr-preview-smee -f
 ```
 
 ---
@@ -104,7 +103,7 @@ git push -u origin main
 2. Fill in:
    - **GitHub App name**: `pr-preview-spike`
    - **Homepage URL**: `https://mypreviews.online`
-   - **Webhook URL**: paste your **Smee channel URL** (from `.env`)
+   - **Webhook URL**: `https://mypreviews.online/webhooks`
    - **Webhook secret**: paste your `WEBHOOK_SECRET` (from `.env`)
 3. **Permissions**:
    - **Pull requests**: Read & Write
@@ -208,7 +207,7 @@ gh pr close <PR-number>
 
 On VPS:
 ```bash
-sudo systemctl stop pr-preview-spike pr-preview-smee
+sudo systemctl stop pr-preview-spike
 docker ps --filter "name=app-pr-" --format '{{.Names}}' | xargs -r docker stop
 docker ps -a --filter "name=app-pr-" --format '{{.Names}}' | xargs -r docker rm
 ```
@@ -216,7 +215,6 @@ docker ps -a --filter "name=app-pr-" --format '{{.Names}}' | xargs -r docker rm
 On GitHub:
 1. Delete the GitHub App (Settings → Developer settings → GitHub Apps)
 2. Delete the sample app repo
-3. Delete smee.io channel
 
 ---
 
@@ -224,8 +222,9 @@ On GitHub:
 
 | Symptom | Fix |
 |---------|-----|
-| Smee shows "Connection refused" | Ensure spike service is running: `systemctl status pr-preview-spike` |
-| Webhook not received | Check GitHub App → Advanced → Delivery logs |
+| Webhook delivery fails | Ensure DNS `A` record for `mypreviews.online` resolves; check GitHub App → Advanced → Delivery logs |
+| Let's Encrypt certificate not issued | Ensure port 80 is reachable from internet; check Traefik logs: `docker logs traefik-traefik-1` |
+| Webhook not received | Check GitHub App → Advanced → Delivery logs; verify webhook URL is `https://mypreviews.online/webhooks` |
 | `docker compose` permission denied | Run `sudo ./setup-vps.sh` (services are systemd-managed as root) |
 | Port 80/443 already in use | Stop conflicting service: `systemctl stop nginx` / `systemctl stop apache2` |
 | Traefik doesn't route | Check container is on `traefik` network: `docker inspect app-pr-N` |

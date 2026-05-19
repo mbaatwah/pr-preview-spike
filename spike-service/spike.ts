@@ -137,5 +137,5 @@ const server = createServer((req, res) => {
 
 server.listen(PORT, () => {
   log(`Spike service listening on port ${PORT}`);
-  log(`Webhook URL: http://localhost:${PORT}/webhooks`);
+  log(`Webhook URL: https://${BASE_DOMAIN}/webhooks`);
 });

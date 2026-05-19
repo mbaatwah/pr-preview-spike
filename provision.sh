@@ -15,7 +15,7 @@ source .env
 : "${VPS_USER:?Set VPS_USER in .env}"
 : "${WEBHOOK_SECRET:?Set WEBHOOK_SECRET in .env}"
 : "${BASE_DOMAIN:?Set BASE_DOMAIN in .env}"
-: "${SMEE_CHANNEL:?Set SMEE_CHANNEL in .env}"
+: "${ACME_EMAIL:?Set ACME_EMAIL in .env}"
 
 SSH="ssh"
 if [ -n "${SSH_KEY_PATH:-}" ]; then
@@ -36,7 +36,6 @@ echo "==> Step 1: Installing dependencies"
 $SSH "$SSH_TARGET" bash -s <<'REMOTE_DEPS'
 set -euo pipefail
 
-# Install Docker
 if ! command -v docker &>/dev/null; then
   echo "  Installing Docker..."
   apt-get update -qq
@@ -44,7 +43,6 @@ if ! command -v docker &>/dev/null; then
   systemctl enable --now docker
 fi
 
-# Install Node.js 20
 if ! command -v node &>/dev/null; then
   echo "  Installing Node.js 20..."
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -59,14 +57,11 @@ REMOTE_DEPS
 
 # ─── 2. Set up Traefik ──────────────────────────────────────────
 echo "==> Step 2: Setting up Traefik"
-$SSH "$SSH_TARGET" bash -s <<'REMOTE_TRAEFIK'
-set -euo pipefail
+$SSH "$SSH_TARGET" "docker network inspect traefik &>/dev/null || docker network create traefik"
+$SSH "$SSH_TARGET" "mkdir -p /opt/traefik/dynamic"
+$SSH "$SSH_TARGET" "touch /opt/traefik/acme.json && chmod 600 /opt/traefik/acme.json"
 
-# Create traefik network
-docker network inspect traefik &>/dev/null || docker network create traefik
-
-# Write Traefik compose file
-cat > /opt/traefik/docker-compose.yml <<'EOF'
+$SSH "$SSH_TARGET" "cat > /opt/traefik/docker-compose.yml" <<COMPOSE
 services:
   traefik:
     image: traefik:v3.3
@@ -75,25 +70,53 @@ services:
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./acme.json:/acme.json
+      - ./dynamic:/etc/traefik/dynamic:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/acme.json"
     networks:
       - traefik
 
 networks:
   traefik:
     external: true
-EOF
+COMPOSE
 
-mkdir -p /opt/traefik
+$SSH "$SSH_TARGET" "cat > /opt/traefik/dynamic/webhooks.yml" <<DYNAMIC
+http:
+  routers:
+    webhook:
+      rule: "Host(\`${BASE_DOMAIN}\`)"
+      service: spike-webhook
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: letsencrypt
+      priority: 100
+  services:
+    spike-webhook:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3002"
+DYNAMIC
 
-# Start Traefik (idempotent)
+$SSH "$SSH_TARGET" bash -s <<'RESTART_TRAEFIK'
+if docker ps --format '{{.Names}}' | grep -q 'traefik'; then
+  echo "  Tearing down existing Traefik..."
+  docker compose -f /opt/traefik/docker-compose.yml -p traefik down
+fi
 docker compose -f /opt/traefik/docker-compose.yml -p traefik up -d
 echo "  Traefik is running"
-REMOTE_TRAEFIK
+RESTART_TRAEFIK
 
 # ─── 3. Copy spike service files ─────────────────────────────────
 echo "==> Step 3: Copying spike service files"
@@ -102,7 +125,6 @@ $SCP "$SCRIPT_DIR"/spike-service/spike.ts "$SSH_TARGET":"${VPS_WORKDIR}/"
 $SCP "$SCRIPT_DIR"/spike-service/package.json "$SSH_TARGET":"${VPS_WORKDIR}/"
 $SCP "$SCRIPT_DIR"/spike-service/tsconfig.json "$SSH_TARGET":"${VPS_WORKDIR}/"
 
-# Write .env on VPS
 $SSH "$SSH_TARGET" "cat > ${VPS_WORKDIR}/.env" <<EOF
 WEBHOOK_SECRET=${WEBHOOK_SECRET}
 BASE_DOMAIN=${BASE_DOMAIN}
@@ -113,16 +135,8 @@ EOF
 echo "==> Step 4: Installing npm dependencies"
 $SSH "$SSH_TARGET" "cd ${VPS_WORKDIR} && npm install"
 
-# ─── 5. Install smee client + pm2 (or run in screen) ───────────
-echo "==> Step 5: Setting up smee tunnel"
-$SSH "$SSH_TARGET" bash -s <<REMOTE_SMEE
-set -euo pipefail
-cd /opt/pr-preview-spike
-npm install --save-dev smee-client 2>/dev/null || true
-REMOTE_SMEE
-
-# ─── 6. Create systemd services ──────────────────────────────────
-echo "==> Step 6: Creating systemd services"
+# ─── 5. Create systemd service ───────────────────────────────────
+echo "==> Step 5: Creating systemd service"
 
 $SSH "$SSH_TARGET" "cat > /etc/systemd/system/pr-preview-spike.service" <<SVC
 [Unit]
@@ -142,36 +156,20 @@ RestartSec=5
 WantedBy=multi-user.target
 SVC
 
-$SSH "$SSH_TARGET" "cat > /etc/systemd/system/pr-preview-smee.service" <<SMEESVC
-[Unit]
-Description=Smee Webhook Proxy for PR Preview
-After=network.target pr-preview-spike.service
-Wants=network.target pr-preview-spike.service
-
-[Service]
-Type=simple
-WorkingDirectory=${VPS_WORKDIR}
-ExecStart=/usr/bin/npx smee -u ${SMEE_CHANNEL} -t http://localhost:3002/webhooks
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-SMEESVC
+# Remove old smee service
+$SSH "$SSH_TARGET" "systemctl stop pr-preview-smee.service 2>/dev/null || true; systemctl disable pr-preview-smee.service 2>/dev/null || true; rm -f /etc/systemd/system/pr-preview-smee.service"
 
 $SSH "$SSH_TARGET" "systemctl daemon-reload"
-$SSH "$SSH_TARGET" "systemctl enable pr-preview-spike.service pr-preview-smee.service"
-$SSH "$SSH_TARGET" "systemctl restart pr-preview-spike.service pr-preview-smee.service"
+$SSH "$SSH_TARGET" "systemctl enable pr-preview-spike.service"
+$SSH "$SSH_TARGET" "systemctl restart pr-preview-spike.service"
 
-# ─── 7. Verify ───────────────────────────────────────────────────
+# ─── 6. Verify ───────────────────────────────────────────────────
 echo ""
 echo "==> Waiting 3s for services to start..."
 sleep 3
 
 echo "Systemd status:"
 $SSH "$SSH_TARGET" "systemctl status pr-preview-spike.service --no-pager --lines=5" || true
-echo "---"
-$SSH "$SSH_TARGET" "systemctl status pr-preview-smee.service --no-pager --lines=5" || true
 
 echo ""
 echo "==================================================================="
@@ -179,12 +177,12 @@ echo "  Provisioning complete!"
 echo ""
 echo "  Traefik:      http://${VPS_IP}"
 echo "  Spike logs:   $SSH $SSH_TARGET 'journalctl -u pr-preview-spike -f'"
-echo "  Smee logs:    $SSH $SSH_TARGET 'journalctl -u pr-preview-smee -f'"
 echo ""
-echo "  Webhook URL (use in GitHub App): ${SMEE_CHANNEL}"
+echo "  Webhook URL (use in GitHub App): https://${BASE_DOMAIN}/webhooks"
+echo "  App preview: http://pr-N.${BASE_DOMAIN}"
 echo ""
 echo "  Next steps:"
-echo "  1. Create the GitHub App (see SETUP.md)"
-echo "  2. Create the sample app repo (see SETUP.md)"
-echo "  3. Run the test flows (see SETUP.md)"
+echo "  1. Create the GitHub App (see SETUP-SSH.md)"
+echo "  2. Create the sample app repo (see SETUP-SSH.md)"
+echo "  3. Run the test flows (see SETUP-SSH.md)"
 echo "==================================================================="

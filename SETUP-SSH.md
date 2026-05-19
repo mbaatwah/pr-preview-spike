@@ -29,19 +29,20 @@ Required fields:
 - `SSH_KEY_PATH` — (optional) path to SSH private key
 - `WEBHOOK_SECRET` — generate with: `openssl rand -hex 32`
 - `BASE_DOMAIN` — `mypreviews.online` (or your domain)
-- `SMEE_CHANNEL` — get from https://smee.io (click "Start a new channel", copy the URL)
+- `ACME_EMAIL` — your email for Let's Encrypt certificate issuance
 
 ---
 
 ## Step 2: DNS Setup (on your DNS provider)
 
-**Add a wildcard A record** for your domain:
+Add two records pointing to your VPS IP:
 
 ```
-*.mypreviews.online  →  <VPS_IP>
+mypreviews.online       →  <VPS_IP>      (A - for Let's Encrypt + webhook)
+*.mypreviews.online     →  <VPS_IP>      (A - wildcard, for PR previews)
 ```
 
-Verify: `dig pr-1.mypreviews.online` should resolve to your VPS IP.
+Verify: `dig pr-1.mypreviews.online` and `dig mypreviews.online` should resolve to your VPS IP.
 
 ---
 
@@ -54,10 +55,10 @@ chmod +x provision.sh
 
 This script SSHs into the VPS and:
 1. Installs Docker + Compose v2 + Node.js 20
-2. Creates the Traefik Docker network and starts Traefik on ports 80/443
+2. Creates the Traefik Docker network and starts Traefik on ports 80/443 with Let's Encrypt
 3. Copies the spike service files to `/opt/pr-preview-spike` on the VPS
 4. Installs npm dependencies
-5. Sets up `systemd` services for the spike (`pr-preview-spike.service`) and smee tunnel (`pr-preview-smee.service`)
+5. Sets up a `systemd` service for the spike (`pr-preview-spike.service`)
 
 Verify it's running:
 
@@ -70,7 +71,6 @@ Check logs:
 
 ```bash
 ssh <VPS_USER>@<VPS_IP> 'journalctl -u pr-preview-spike -f'
-ssh <VPS_USER>@<VPS_IP> 'journalctl -u pr-preview-smee -f'
 ```
 
 ---
@@ -97,7 +97,7 @@ git push -u origin main
 2. Fill in:
    - **GitHub App name**: `pr-preview-spike`
    - **Homepage URL**: `https://mypreviews.online`
-   - **Webhook URL**: paste your **Smee channel URL** (from `.env`)
+   - **Webhook URL**: `https://mypreviews.online/webhooks`
    - **Webhook secret**: paste your `WEBHOOK_SECRET` (from `.env`)
 3. **Permissions**:
    - **Pull requests**: Read & Write
@@ -201,7 +201,7 @@ gh pr close <PR-number>
 
 On VPS:
 ```bash
-ssh <VPS_USER>@<VPS_IP> 'systemctl stop pr-preview-spike pr-preview-smee'
+ssh <VPS_USER>@<VPS_IP> 'systemctl stop pr-preview-spike'
 ssh <VPS_USER>@<VPS_IP> 'docker ps --filter "name=app-pr-" --format "{{.Names}}" | xargs -r docker stop'
 ssh <VPS_USER>@<VPS_IP> 'docker ps -a --filter "name=app-pr-" --format "{{.Names}}" | xargs -r docker rm'
 ```
@@ -209,7 +209,6 @@ ssh <VPS_USER>@<VPS_IP> 'docker ps -a --filter "name=app-pr-" --format "{{.Names
 On GitHub:
 1. Delete the GitHub App (Settings → Developer settings → GitHub Apps)
 2. Delete the sample app repo
-3. Delete smee.io channel
 
 ---
 
@@ -218,8 +217,9 @@ On GitHub:
 | Symptom | Fix |
 |---------|-----|
 | `provision.sh` can't connect | Check VPS_IP, VPS_USER in `.env`; verify SSH key or password auth works |
-| Smee shows "Connection refused" | SSH in and run `systemctl status pr-preview-spike` |
-| Webhook not received | Check GitHub App → Advanced → Delivery logs |
+| Webhook delivery fails | Ensure DNS `A` record for `mypreviews.online` resolves; check GitHub App → Advanced → Delivery logs |
+| Let's Encrypt certificate not issued | Ensure port 80 is reachable from internet; check Traefik logs: `docker logs traefik-traefik-1` |
+| Webhook not received | Check GitHub App → Advanced → Delivery logs; verify webhook URL is `https://mypreviews.online/webhooks` |
 | `docker compose` permission denied | SSH in and add user to docker group: `usermod -aG docker $USER` |
 | Port 80/443 already in use | SSH in and stop nginx/apache: `systemctl stop nginx` |
 | Traefik doesn't route | SSH in and check container is on `traefik` network: `docker inspect app-pr-N` |
