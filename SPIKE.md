@@ -408,7 +408,7 @@ docker compose -p pr-<N> down --volumes
 
 Mark the spike as **successful** if all of these pass:
 
-- [ ] PR opened → preview available at `http://localhost:4000X`
+- [ ] PR opened → preview available at `https://pr-N.mypreviews.online`
 - [ ] PR sync → old stack replaced with new build
 - [ ] PR closed → stack removed (no clone needed)
 - [ ] Rapid 3-push → no race condition, final state correct
@@ -436,7 +436,7 @@ These are out of scope for the spike and belong in the full implementation:
 - Cleanup cron job
 - systemd service file
 - `.pr-preview.yml` repo config
-- HTTPS / Let's Encrypt (use plain HTTP or Traefik's TLS later)
+- HTTPS / Let's Encrypt ~~(use plain HTTP or Traefik's TLS later)~~ → implemented via Traefik v2.11 + Let's Encrypt
 - Multi-service compose files (just one `app` service)
 - Secrets management (hardcode for spike)
 

@@ -136,8 +136,8 @@ gh pr create --title "Test PR preview" --body "Spike validation" --base main
 - [ ] Spike logs show `PR #1 | opened`
 - [ ] On VPS: `docker ps | grep app-pr-1` shows running container
 - [ ] On VPS: `curl http://localhost:40001` returns HTML
-- [ ] On VPS: `curl -H "Host: pr-1.mypreviews.online" http://localhost` routes through Traefik
-- [ ] Browser: open `http://pr-1.mypreviews.online`
+- [ ] On VPS: `curl -H "Host: pr-1.mypreviews.online" http://localhost` routes through Traefik (redirects to HTTPS)
+- [ ] Browser: open `https://pr-1.mypreviews.online`
 
 ### Test 2: PR Synchronized (push new commit)
 
@@ -151,7 +151,7 @@ git push
 - [ ] Old container stack torn down (logs show "Tearing down existing pr-1")
 - [ ] New stack built and started
 - [ ] No port conflicts
-- [ ] `curl http://<VPS_IP>:40001` still works
+- [ ] `curl http://<VPS_IP>:40001` still works (direct, bypassing Traefik)
 
 ### Test 3: Rapid Pushes (concurrency)
 
