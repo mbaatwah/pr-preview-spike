@@ -96,6 +96,8 @@ services:
       - ./dynamic:/etc/traefik/dynamic:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    environment:
+      - DOCKER_API_VERSION=1.44
     command:
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
