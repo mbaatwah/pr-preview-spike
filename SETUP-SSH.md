@@ -30,6 +30,7 @@ Required fields:
 - `WEBHOOK_SECRET` — generate with: `openssl rand -hex 32`
 - `BASE_DOMAIN` — `mypreviews.online` (or your domain)
 - `ACME_EMAIL` — your email for Let's Encrypt certificate issuance
+- `USE_SSH_CLONE` — `true` (default) to use SSH deploy keys for private repos
 
 ---
 
@@ -52,6 +53,10 @@ Verify: `dig pr-1.mypreviews.online` and `dig mypreviews.online` should resolve 
 chmod +x provision.sh
 ./provision.sh
 ```
+
+The script will print an SSH public key from the VPS — copy it and add to GitHub:
+- **Repo-specific** (recommended for spike): `pr-preview-sample-app` → Settings → Deploy keys → Add deploy key
+- **Account-wide** (all repos): https://github.com/settings/keys
 
 This script SSHs into the VPS and:
 1. Installs Docker + Compose v2 + Node.js 20
@@ -224,4 +229,4 @@ On GitHub:
 | Port 80/443 already in use | SSH in and stop nginx/apache: `systemctl stop nginx` |
 | Traefik doesn't route | SSH in and check container is on `traefik` network: `docker inspect app-pr-N` |
 | `ts-node` not found | SSH in and run `npm install` in `/opt/pr-preview-spike` |
-| Git clone fails (auth) | Use HTTPS clone URL for public repos, or set up an SSH key on the VPS |
+| Git clone fails (auth) | Add the VPS SSH public key to your GitHub repo (Settings → Deploy keys) or set `USE_SSH_CLONE=false` for public repos |

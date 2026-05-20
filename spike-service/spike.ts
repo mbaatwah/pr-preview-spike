@@ -8,6 +8,12 @@ import { join } from "path";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET!;
 const BASE_DOMAIN = process.env.BASE_DOMAIN!;
 const PORT = parseInt(process.env.PORT || "3002", 10);
+const USE_SSH_CLONE = process.env.USE_SSH_CLONE === "true";
+
+function toSshUrl(httpsUrl: string): string {
+  // https://github.com/owner/repo.git -> git@github.com:owner/repo.git
+  return httpsUrl.replace(/^https:\/\/github\.com\//, "git@github.com:");
+}
 
 function verifySignature(payload: string, signature: string): boolean {
   const hmac = createHmac("sha256", WEBHOOK_SECRET);
@@ -64,8 +70,9 @@ async function handleWebhook(req: IncomingMessage, res: ServerResponse) {
   if (action === "opened" || action === "synchronize" || action === "reopened") {
     const tmpDir = mkdtempSync(join(tmpdir(), "pr-preview-"));
     try {
-      log(`  Cloning ${cloneUrl}#${headRef} into ${tmpDir}`);
-      execSync(`git clone --depth 1 --branch "${headRef}" "${cloneUrl}" "${tmpDir}"`, {
+      const url = USE_SSH_CLONE ? toSshUrl(cloneUrl) : cloneUrl;
+      log(`  Cloning ${url}#${headRef} into ${tmpDir}`);
+      execSync(`git clone --depth 1 --branch "${headRef}" "${url}" "${tmpDir}"`, {
         stdio: "pipe",
         timeout: 60000,
       });

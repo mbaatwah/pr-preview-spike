@@ -20,12 +20,32 @@ set -a; source .env; set +a
 : "${BASE_DOMAIN:?Set BASE_DOMAIN in .env}"
 : "${ACME_EMAIL:?Set ACME_EMAIL in .env}"
 
+USE_SSH_CLONE="${USE_SSH_CLONE:-true}"
 SPIKE_DIR="$SCRIPT_DIR/spike-service"
+SSH_KEY_FILE="${HOME}/.ssh/id_ed25519"
 
 echo "==> PR Preview Spike — VPS Setup"
 echo "    Domain:   ${BASE_DOMAIN}"
 echo "    ACME:     ${ACME_EMAIL}"
 echo "    Spike dir: ${SPIKE_DIR}"
+
+# ─── 0. Generate SSH key for GitHub cloning ──────────────────────
+if [ "${USE_SSH_CLONE}" = "true" ]; then
+  echo "==> Step 0: SSH key for GitHub"
+  if [ ! -f "${SSH_KEY_FILE}" ]; then
+    mkdir -p "$(dirname "${SSH_KEY_FILE}")"
+    ssh-keygen -t ed25519 -C "pr-preview-spike@VPS" -f "${SSH_KEY_FILE}" -N ""
+    echo "  Generated: ${SSH_KEY_FILE}"
+  fi
+  echo "  Public key:"
+  echo ""
+  cat "${SSH_KEY_FILE}.pub"
+  echo ""
+  echo "  ⬆️  Add this key to GitHub:"
+  echo "     Repo → Settings → Deploy keys → Add deploy key (tick 'Allow write access')"
+  echo "     OR  → https://github.com/settings/keys  (add to your account)"
+  echo ""
+fi
 
 # ─── 1. Install Docker + Compose ─────────────────────────────────
 echo "==> Step 1: Installing Docker + Compose"
@@ -125,6 +145,7 @@ cat > "$SPIKE_DIR/.env" <<ENVFILE
 WEBHOOK_SECRET=${WEBHOOK_SECRET}
 BASE_DOMAIN=${BASE_DOMAIN}
 PORT=3002
+USE_SSH_CLONE=${USE_SSH_CLONE}
 ENVFILE
 
 # ─── 5. Create systemd service ───────────────────────────────────

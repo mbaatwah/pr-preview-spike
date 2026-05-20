@@ -16,7 +16,7 @@ This spike validates 5 assumptions for a GitHub App PR preview system:
 
 ---
 
-## Step 1: Clone the repo on your VPS
+## Step 1: Clone the repo on your VPS ✅
 
 ```bash
 ssh root@<your-vps-ip>
@@ -26,7 +26,7 @@ cd /opt/pr-preview-spike
 
 ---
 
-## Step 2: Configure .env on the VPS
+## Step 2: Configure .env on the VPS ✅
 
 ```bash
 cp .env.template .env
@@ -37,10 +37,11 @@ Required fields:
 - `WEBHOOK_SECRET` — generate with: `openssl rand -hex 32`
 - `BASE_DOMAIN` — `mypreviews.online` (or your domain)
 - `ACME_EMAIL` — your email for Let's Encrypt certificate issuance
+- `USE_SSH_CLONE` — `true` (default) to use SSH deploy keys for private repos
 
 ---
 
-## Step 3: DNS Setup (on your DNS provider)
+## Step 3: DNS Setup (on your DNS provider) ✅
 
 Add two records pointing to your VPS IP:
 
@@ -53,11 +54,15 @@ Verify: `dig pr-1.mypreviews.online` and `dig mypreviews.online` should resolve 
 
 ---
 
-## Step 4: Run the VPS setup script
+## Step 4: Run the VPS setup script ✅
 
 ```bash
 sudo ./setup-vps.sh
 ```
+
+The script will print an SSH public key — copy it and add to GitHub:
+- **Repo-specific** (recommended for spike): `pr-preview-sample-app` → Settings → Deploy keys → Add deploy key
+- **Account-wide** (all repos): https://github.com/settings/keys
 
 This script installs and configures everything on the VPS:
 1. Docker + Compose v2
@@ -81,7 +86,7 @@ journalctl -u pr-preview-spike -f
 
 ---
 
-## Step 5: Create the Sample App Repo
+## Step 5: Create the Sample App Repo ✅
 
 On your local machine (not the VPS):
 
@@ -229,4 +234,4 @@ On GitHub:
 | Port 80/443 already in use | Stop conflicting service: `systemctl stop nginx` / `systemctl stop apache2` |
 | Traefik doesn't route | Check container is on `traefik` network: `docker inspect app-pr-N` |
 | `ts-node` not found | Run `npm install` in `/opt/pr-preview-spike/spike-service` |
-| Git clone fails (auth) | Use HTTPS clone URL for public repos, or set up an SSH key on the VPS |
+| Git clone fails (auth) | Add the VPS SSH public key to your GitHub repo (Settings → Deploy keys) or set `USE_SSH_CLONE=false` for public repos |

@@ -17,6 +17,7 @@ source .env
 : "${BASE_DOMAIN:?Set BASE_DOMAIN in .env}"
 : "${ACME_EMAIL:?Set ACME_EMAIL in .env}"
 
+USE_SSH_CLONE="${USE_SSH_CLONE:-true}"
 SSH="ssh"
 if [ -n "${SSH_KEY_PATH:-}" ]; then
   SSH="ssh -i ${SSH_KEY_PATH}"
@@ -30,6 +31,27 @@ fi
 VPS_WORKDIR="/opt/pr-preview-spike"
 
 echo "==> Provisioning VPS: ${VPS_IP} as ${VPS_USER}"
+
+# ─── 0. Generate SSH key for GitHub cloning ──────────────────────
+if [ "${USE_SSH_CLONE}" = "true" ]; then
+  echo "==> Step 0: SSH key for GitHub"
+  $SSH "$SSH_TARGET" bash -s <<'REMOTE_SSH'
+set -euo pipefail
+KEY_FILE="${HOME}/.ssh/id_ed25519"
+if [ ! -f "${KEY_FILE}" ]; then
+  mkdir -p "$(dirname "${KEY_FILE}")"
+  ssh-keygen -t ed25519 -C "pr-preview-spike@VPS" -f "${KEY_FILE}" -N ""
+  echo "  Generated: ${KEY_FILE}"
+fi
+echo "  Public key:"
+echo ""
+cat "${KEY_FILE}.pub"
+echo ""
+echo "  Add this key to GitHub:"
+echo "    Repo → Settings → Deploy keys → Add deploy key"
+echo "    OR  → https://github.com/settings/keys  (account-wide)"
+REMOTE_SSH
+fi
 
 # ─── 1. Install Docker + Compose + Node.js ──────────────────────
 echo "==> Step 1: Installing dependencies"
@@ -129,6 +151,7 @@ $SSH "$SSH_TARGET" "cat > ${VPS_WORKDIR}/.env" <<EOF
 WEBHOOK_SECRET=${WEBHOOK_SECRET}
 BASE_DOMAIN=${BASE_DOMAIN}
 PORT=3002
+USE_SSH_CLONE=${USE_SSH_CLONE}
 EOF
 
 # ─── 4. Install npm deps ────────────────────────────────────────
