@@ -10,8 +10,10 @@ const BASE_DOMAIN = process.env.BASE_DOMAIN!;
 const PORT = parseInt(process.env.PORT || "3002", 10);
 const USE_SSH_CLONE = process.env.USE_SSH_CLONE === "true";
 
+// Track PRs currently being built to skip duplicates
+const inFlight = new Set<number>();
+
 function toSshUrl(httpsUrl: string): string {
-  // https://github.com/owner/repo.git -> git@github.com:owner/repo.git
   return httpsUrl.replace(/^https:\/\/github\.com\//, "git@github.com:");
 }
 
@@ -39,38 +41,26 @@ function log(msg: string) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-async function handleWebhook(req: IncomingMessage, res: ServerResponse) {
-  const sig = req.headers["x-hub-signature-256"] as string;
-  const event = req.headers["x-github-event"] as string;
-  const body = await readBody(req);
-
-  if (!sig || !verifySignature(body, sig)) {
-    res.writeHead(401);
-    res.end("invalid signature");
-    return;
-  }
-
-  if (event !== "pull_request") {
-    res.writeHead(200);
-    res.end("ignored");
-    return;
-  }
-
-  const payload = JSON.parse(body);
-  const action: string = payload.action;
-  const number: number = payload.number;
-  const cloneUrl: string = payload.pull_request.head.repo.clone_url;
-  const headRef: string = payload.pull_request.head.ref;
-  const fullName: string = payload.pull_request.head.repo.full_name;
-
-  log(`PR #${number} | ${action} | ${fullName}`);
-
+function deployPreview(
+  number: number,
+  cloneUrl: string,
+  headRef: string,
+  fullName: string
+) {
   const projectName = `pr-${number}`;
 
-  if (action === "opened" || action === "synchronize" || action === "reopened") {
+  if (inFlight.has(number)) {
+    log(`PR #${number} | skipped — build already in progress`);
+    return;
+  }
+
+  inFlight.add(number);
+
+  try {
     const tmpDir = mkdtempSync(join(tmpdir(), "pr-preview-"));
     try {
       const url = USE_SSH_CLONE ? toSshUrl(cloneUrl) : cloneUrl;
+      log(`PR #${number} | building | ${fullName}`);
       log(`  Cloning ${url}#${headRef} into ${tmpDir}`);
       execSync(`git clone --depth 1 --branch "${headRef}" "${url}" "${tmpDir}"`, {
         stdio: "pipe",
@@ -110,23 +100,66 @@ async function handleWebhook(req: IncomingMessage, res: ServerResponse) {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  } catch (err: any) {
+    log(`PR #${number} | ERROR: ${err.message}`);
+  } finally {
+    inFlight.delete(number);
+  }
+}
+
+function teardownPreview(number: number) {
+  const projectName = `pr-${number}`;
+  log(`PR #${number} | closed | tearing down ${projectName}`);
+  try {
+    execSync(`docker compose -p ${projectName} down --volumes`, {
+      stdio: "pipe",
+      timeout: 30000,
+    });
+    log(`  ${projectName} removed`);
+  } catch {
+    log(`  No stack found for ${projectName}`);
+  }
+}
+
+async function handleWebhook(req: IncomingMessage, res: ServerResponse) {
+  const sig = req.headers["x-hub-signature-256"] as string;
+  const event = req.headers["x-github-event"] as string;
+  const body = await readBody(req);
+
+  if (!sig || !verifySignature(body, sig)) {
+    res.writeHead(401);
+    res.end("invalid signature");
+    return;
+  }
+
+  if (event !== "pull_request") {
+    res.writeHead(200);
+    res.end("ignored");
+    return;
+  }
+
+  // Parse payload
+  const payload = JSON.parse(body);
+  const action: string = payload.action;
+  const number: number = payload.number;
+  const cloneUrl: string = payload.pull_request.head.repo.clone_url;
+  const headRef: string = payload.pull_request.head.ref;
+  const fullName: string = payload.pull_request.head.repo.full_name;
+
+  log(`PR #${number} | ${action} | ${fullName} | ack`);
+
+  // Acknowledge immediately (GitHub webhook timeout is 10s)
+  res.writeHead(200);
+  res.end("ok");
+
+  // Process asynchronously
+  if (action === "opened" || action === "synchronize" || action === "reopened") {
+    setImmediate(() => deployPreview(number, cloneUrl, headRef, fullName));
   }
 
   if (action === "closed") {
-    try {
-      log(`  Tearing down ${projectName}`);
-      execSync(`docker compose -p ${projectName} down --volumes`, {
-        stdio: "pipe",
-        timeout: 30000,
-      });
-      log(`  ${projectName} removed`);
-    } catch {
-      log(`  No stack found for ${projectName}`);
-    }
+    setImmediate(() => teardownPreview(number));
   }
-
-  res.writeHead(200);
-  res.end("ok");
 }
 
 const server = createServer((req, res) => {
