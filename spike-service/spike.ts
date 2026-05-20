@@ -106,7 +106,7 @@ async function handleWebhook(req: IncomingMessage, res: ServerResponse) {
         { cwd: tmpDir, stdio: "inherit", timeout: 60000 }
       );
 
-      log(`  Done -> https://pr-${number}.${BASE_DOMAIN}`);
+      log(`  Done -> http://pr-${number}.${BASE_DOMAIN}`);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
