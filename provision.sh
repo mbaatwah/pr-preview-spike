@@ -86,7 +86,7 @@ $SSH "$SSH_TARGET" "touch /opt/traefik/acme.json && chmod 600 /opt/traefik/acme.
 $SSH "$SSH_TARGET" "cat > /opt/traefik/docker-compose.yml" <<COMPOSE
 services:
   traefik:
-    image: traefik:v3.3
+    image: traefik:v2.11
     ports:
       - "80:80"
       - "443:443"
@@ -96,8 +96,6 @@ services:
       - ./dynamic:/etc/traefik/dynamic:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    environment:
-      - DOCKER_API_VERSION=1.44
     command:
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
